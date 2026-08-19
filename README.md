@@ -33,9 +33,6 @@ Para *assistir*, qualquer navegador serve.
 
 **1.** Baixe este projeto e descompacte numa pasta.
 
-**2.** Clique duas vezes em `start.bat`. Ele instala o que faltar e sobe
-tudo numa janela só.
-
 Se preferir o terminal: abra a pasta, clique na barra de endereço, digite
 `cmd` e aperte Enter. Depois:
 
