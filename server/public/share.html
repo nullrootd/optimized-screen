@@ -8,7 +8,7 @@
          dos cabeçalhos no-store guardou a versão antiga por heurística do
          navegador, e continuaria usando ela para sempre. Trocar a query força
          uma URL nova. Incremente ao publicar mudanças nesses arquivos. -->
-    <link rel="stylesheet" href="/share.css?v=9" />
+    <link rel="stylesheet" href="/share.css?v=10" />
   </head>
   <body>
     <main class="card">
@@ -18,29 +18,33 @@
       </header>
 
       <section id="setup">
-        <div class="row">
+        <p id="presetLine" class="preset">Automático · 60+ fps · ajusta sozinho</p>
+
+        <div class="row" hidden>
           <label for="quality">Qualidade</label>
           <select id="quality">
-            <option value="1000000">Leve — 1 Mbps</option>
-            <option value="2500000" selected>Boa — 2,5 Mbps</option>
-            <option value="5000000">Alta — 5 Mbps</option>
-            <option value="8000000">Máxima — 8 Mbps</option>
+            <option value="auto" selected>Automático — 60+ fps</option>
+            <option value="3000000">Leve — 3 Mbps</option>
+            <option value="6000000">Boa — 6 Mbps</option>
+            <option value="10000000">Alta — 10 Mbps</option>
+            <option value="16000000">Máxima — 16 Mbps</option>
           </select>
         </div>
 
-        <div class="row">
+        <div class="row" hidden>
           <label for="fps">Taxa de quadros</label>
           <select id="fps">
-            <option value="15">15 fps — economiza banda</option>
-            <option value="30" selected>30 fps — mais fluido</option>
-            <option value="60">60 fps — jogo e vídeo, exija 5 Mbps ou mais</option>
+            <option value="30">30 fps</option>
+            <option value="60">60 fps</option>
+            <option value="90">90 fps</option>
+            <option value="120" selected>120 fps — teto no automático</option>
           </select>
         </div>
 
-        <p id="presetLine" class="preset" hidden></p>
+        <button id="advanced" class="ghost" type="button">Ajustes avançados</button>
 
         <label class="check">
-          <input id="withAudio" type="checkbox" />
+          <input id="withAudio" type="checkbox" checked />
           <span>Compartilhar o som do computador</span>
         </label>
 
@@ -49,11 +53,12 @@
           ele entrega a tela sem som.
         </p>
 
-        <button id="start" class="primary">Escolher tela e transmitir</button>
+        <button id="start" class="primary">Clique para escolher a tela</button>
       </section>
 
       <section id="live" hidden>
         <div class="live-badge"><span class="dot"></span> No ar</div>
+        <p id="hud" class="hud">—</p>
         <video id="preview" muted playsinline></video>
         <div class="stats">
           <div><strong id="viewers">0</strong><span>assistindo</span></div>
@@ -72,6 +77,6 @@
       </footer>
     </main>
 
-    <script type="module" src="/share.js?v=10"></script>
+    <script type="module" src="/share.js?v=11"></script>
   </body>
 </html>

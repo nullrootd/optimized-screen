@@ -9,14 +9,27 @@
  * impõe piso de latência. WebCodecs codifica quadro a quadro e envia direto.
  */
 
-// H264 costuma ter encoder por hardware; VP8 quase sempre cai em software, que
-// a 1080p derruba o framerate. Por isso as duas variantes de H264 vêm antes:
-// annexb dispensa o blob `description`, e avcC é aceito onde annexb não é.
+import { createAdaptive, codecLabel, AUTO_BITRATE, AUTO_FPS } from './adaptive.js';
+
+export { AUTO_BITRATE, AUTO_FPS, codecLabel };
+
+const HW = { hardwareAcceleration: 'prefer-hardware' };
+
+// High/Main 4.2+ com encoder por hardware primeiro: Baseline 3.0 (42E01E) mal
+// cobre 480p30 na spec e era o teto silencioso dos 60 fps. AV1/VP9 HW entram
+// se o aparelho tiver; VP8 e Baseline ficam no fim, para o adaptativo descer
+// resolução em vez de fingir 60 fps em software.
 const CANDIDATES = [
+  { codec: 'avc1.640033', avc: { format: 'annexb' }, ...HW },
+  { codec: 'avc1.64002A', avc: { format: 'annexb' }, ...HW },
+  { codec: 'avc1.4D402A', avc: { format: 'annexb' }, ...HW },
+  { codec: 'av01.0.08M.08', ...HW },
+  { codec: 'vp09.00.51.08', ...HW },
+  { codec: 'avc1.64002A', avc: { format: 'annexb' } },
+  { codec: 'avc1.42E02A', avc: { format: 'annexb' }, ...HW },
   { codec: 'avc1.42E01E', avc: { format: 'annexb' } },
   { codec: 'avc1.42E01E' },
   { codec: 'vp8' },
-  { codec: 'vp09.00.10.08' },
 ];
 
 // Keyframe periódico: seguro barato para quem reconecta fora do fluxo normal.
@@ -33,16 +46,15 @@ const TIPO_AUDIO = 3;
 // ruído perto dos megabits do vídeo — não vale economizar aqui.
 const AUDIO_BITRATE = 96_000;
 
-// Teto de resolução: acima disso banda e CPU disparam sem ganho de legibilidade.
-// A imagem é reduzida proporcionalmente, nunca cortada.
-const MAX_W = 1920;
-const MAX_H = 1080;
-
 const even = (n) => Math.max(2, n - (n % 2));
 
-function fitWithin(w, h) {
-  const scale = Math.min(1, MAX_W / w, MAX_H / h);
+function fitWithin(w, h, maxW, maxH) {
+  const scale = Math.min(1, maxW / w, maxH / h);
   return { width: even(Math.round(w * scale)), height: even(Math.round(h * scale)) };
+}
+
+function hintForFps(n) {
+  return n >= 60 ? 'motion' : 'text';
 }
 
 /** Motivo pelo qual este navegador não consegue transmitir, ou null. */
@@ -64,8 +76,10 @@ export function supportError({ requireChromium = false } = {}) {
 /**
  * @param {object} opts
  * @param {string} opts.wsUrl        endpoint do relay, com o token de transmissor
- * @param {number} opts.bitrate      bits por segundo
+ * @param {number} opts.bitrate      bits por segundo (teto inicial)
  * @param {number} opts.fps
+ * @param {boolean} [opts.adaptive]  ajusta bitrate/resolução/fps sozinho
+ * @param {number} [opts.maxFps]     teto do modo automático (60–120)
  * @param {boolean} [opts.audio]     capturar também o som do computador
  * @param {(info:object)=>void} [opts.onStatus]  codec/resolução/caminho de captura
  * @param {(stats:object)=>void} [opts.onStats]  viewers, fps, mbps, segundos no ar
@@ -77,6 +91,8 @@ export function createBroadcaster({
   wsUrl,
   bitrate,
   fps,
+  adaptive = false,
+  maxFps = 120,
   audio = false,
   onStatus,
   onStats,
@@ -109,11 +125,57 @@ export function createBroadcaster({
   let frames = 0;
   let viewers = 0;
   let statsTimer = null;
+  let maxW = 1920;
+  let maxH = 1080;
+  let hardware = false;
+  let softwareAvisado = false;
+  const adapt = createAdaptive({
+    enabled: adaptive,
+    bitrate,
+    fps,
+    maxFps,
+    maxHeight: maxH,
+  });
+
+  function videoCaptureOptions() {
+    // Chrome costuma entregar 30 fps se o teto for o próprio alvo. Com 60+
+    // pedimos até 120 para o adaptativo ter de onde subir, e repetimos o
+    // pedido em applyConstraints — o primeiro frequentemente é ignorado.
+    const max = fps >= 60 ? 120 : fps;
+    return {
+      frameRate: { ideal: fps, max },
+      width: { max: 1920 },
+      height: { max: 1080 },
+    };
+  }
+
+  function applyCaptureRate(track) {
+    if (!track) return;
+    track.contentHint = hintForFps(fps);
+    const max = fps >= 60 ? 120 : fps;
+    track.applyConstraints({ frameRate: { ideal: fps, max } }).catch(() => {});
+  }
+
+  function emitStatus(extra = {}) {
+    if (!config) return;
+    onStatus?.({
+      codec: config.codec,
+      label: codecLabel(config.codec, hardware),
+      width: config.width,
+      height: config.height,
+      bitrate,
+      fps,
+      hardware,
+      adaptive: adapt.isEnabled(),
+      direct: Boolean(window.MediaStreamTrackProcessor),
+      ...extra,
+    });
+  }
 
   async function start() {
     // Precisa vir do gesto do usuário; qualquer await antes disso o invalida.
     stream = await navigator.mediaDevices.getDisplayMedia({
-      video: { frameRate: { ideal: fps, max: fps } },
+      video: videoCaptureOptions(),
       // systemAudio: 'include' pede o som do computador em vez de só o da aba.
       // Os tratamentos de voz ficam desligados: eles existem para microfone e,
       // em som de aplicativo, cortam justamente o que se queria ouvir.
@@ -121,13 +183,13 @@ export function createBroadcaster({
     });
 
     const track = stream.getVideoTracks()[0];
-    // Diz ao encoder que o conteúdo é tela (texto/UI), não vídeo natural —
-    // preserva nitidez das bordas em vez de suavizar.
-    track.contentHint = 'text';
+    // 60+ fps pede 'motion' (jogo/vídeo). Abaixo disso, 'text' preserva UI.
+    track.contentHint = hintForFps(fps);
     track.addEventListener('ended', () => stop('Você parou o compartilhamento pelo navegador.'));
+    applyCaptureRate(track);
 
     const s = track.getSettings();
-    const target = fitWithin(s.width ?? 1280, s.height ?? 720);
+    const target = fitWithin(s.width ?? 1280, s.height ?? 720, maxW, maxH);
 
     config = await pickConfig(target.width, target.height);
     if (!config) {
@@ -143,6 +205,8 @@ export function createBroadcaster({
     });
     encoder.configure(config);
 
+    hardware = config.hardwareAcceleration === 'prefer-hardware';
+
     ws.send(JSON.stringify({ type: 'start' }));
 
     running = true;
@@ -151,20 +215,35 @@ export function createBroadcaster({
     srcW = 0;
     srcH = 0;
     startedAt = Date.now();
+    softwareAvisado = false;
 
-    onStatus?.({
-      codec: config.codec,
-      width: config.width,
-      height: config.height,
-      direct: Boolean(window.MediaStreamTrackProcessor),
-    });
+    emitStatus();
 
     statsTimer = setInterval(() => {
+      const actualFps = frames;
+      const decision = adapt.tick({
+        fps: actualFps,
+        targetFps: fps,
+        queueSize: encoder?.encodeQueueSize ?? 0,
+        bufferedAmount: ws?.bufferedAmount ?? 0,
+        hardware,
+      });
+      if (decision) applyAdaptive(decision);
+
       onStats?.({
         viewers,
-        fps: frames,
+        fps: actualFps,
         mbps: (bytes * 8) / 1e6,
         seconds: Math.floor((Date.now() - startedAt) / 1000),
+        width: config?.width,
+        height: config?.height,
+        bitrate,
+        targetFps: fps,
+        hardware,
+        codec: config?.codec,
+        label: config ? codecLabel(config.codec, hardware) : '',
+        adaptive: adapt.isEnabled(),
+        reason: adapt.snapshot().reason,
       });
       bytes = 0;
       frames = 0;
@@ -351,12 +430,18 @@ export function createBroadcaster({
   }
 
   async function pickConfig(width, height) {
-    // Duas passadas: navegadores que não conhecem `latencyMode` podem recusar a
-    // configuração inteira por causa dela. Mais latência é melhor que nada.
-    for (const realtime of [true, false]) {
+    // Várias passadas: `latencyMode`, `bitrateMode` e `hardwareAcceleration`
+    // são recusados em bloco em navegadores antigos. Mais latência é melhor
+    // que nada; software é melhor que recusar a transmissão.
+    const extras = [
+      { latencyMode: 'realtime', bitrateMode: 'variable' },
+      { latencyMode: 'realtime' },
+      { bitrateMode: 'variable' },
+      {},
+    ];
+    for (const extra of extras) {
       for (const candidate of CANDIDATES) {
-        const cfg = { ...candidate, width, height, bitrate, framerate: fps };
-        if (realtime) cfg.latencyMode = 'realtime';
+        const cfg = { ...candidate, width, height, bitrate, framerate: fps, ...extra };
         try {
           const { supported } = await VideoEncoder.isConfigSupported(cfg);
           if (supported) return cfg;
@@ -366,6 +451,38 @@ export function createBroadcaster({
       }
     }
     return null;
+  }
+
+  function applyAdaptive(decision) {
+    if (decision.bitrate) bitrate = decision.bitrate;
+    if (decision.fps) fps = decision.fps;
+    if (decision.maxHeight) {
+      maxH = decision.maxHeight;
+      maxW = even(Math.round(decision.maxHeight * (16 / 9)));
+      srcW = 0;
+      srcH = 0;
+    }
+
+    if (encoder?.state === 'configured') {
+      config = { ...config, bitrate, framerate: fps };
+      try {
+        encoder.configure(config);
+      } catch (err) {
+        console.warn('[adapt configure]', err.message);
+      }
+      wantKeyframe = true;
+    }
+
+    applyCaptureRate(stream?.getVideoTracks()[0]);
+    emitStatus({ reason: decision.reason });
+
+    if (decision.reason === 'software' && !softwareAvisado) {
+      softwareAvisado = true;
+      onAviso?.(
+        'Este computador está codificando por software e não segura 60 fps em tela grande. ' +
+          'Caindo para 30 fps para a imagem ficar estável.'
+      );
+    }
   }
 
   // ------------------------------------------------------------------ captura
@@ -497,18 +614,13 @@ export function createBroadcaster({
 
     srcW = sw;
     srcH = sh;
-    const target = fitWithin(sw, sh);
+    const target = fitWithin(sw, sh, maxW, maxH);
 
     if (target.width !== config.width || target.height !== config.height) {
       config = { ...config, ...target };
       encoder.configure(config);
       wantKeyframe = true;
-      onStatus?.({
-        codec: config.codec,
-        width: config.width,
-        height: config.height,
-        direct: Boolean(window.MediaStreamTrackProcessor),
-      });
+      emitStatus();
     }
 
     // fitWithin preserva a proporção, então reduzir não corta nada.
@@ -634,7 +746,7 @@ export function createBroadcaster({
   async function changeScreen() {
     // Precisa vir do gesto do usuário, como qualquer getDisplayMedia.
     const fresh = await navigator.mediaDevices.getDisplayMedia({
-      video: { frameRate: { ideal: fps, max: fps } },
+      video: videoCaptureOptions(),
       audio: audio ? audioConstraints() : false,
     });
 
@@ -643,8 +755,9 @@ export function createBroadcaster({
 
     stream = fresh;
     const track = fresh.getVideoTracks()[0];
-    track.contentHint = 'text';
+    track.contentHint = hintForFps(fps);
     track.addEventListener('ended', () => stop('Você parou o compartilhamento pelo navegador.'));
+    applyCaptureRate(track);
 
     // Encerra o loop anterior antes de abrir outro, senão os dois disputam o
     // encoder e a fila estoura.
@@ -675,24 +788,21 @@ export function createBroadcaster({
   }
 
   /** Ajusta qualidade e taxa de quadros com a transmissão no ar. */
-  function setQuality({ bitrate: nextBitrate, fps: nextFps } = {}) {
+  function setQuality({ bitrate: nextBitrate, fps: nextFps, adaptive: nextAdaptive } = {}) {
+    if (nextAdaptive != null) adapt.setEnabled(nextAdaptive);
     if (nextBitrate) bitrate = nextBitrate;
     if (nextFps) fps = nextFps;
+    adapt.setManual({ bitrate, fps, maxHeight: maxH });
     if (encoder?.state !== 'configured') return;
 
     config = { ...config, bitrate, framerate: fps };
     encoder.configure(config);
     wantKeyframe = true;
-
-    // Pedir a taxa nova à própria captura evita gastar CPU codificando quadros
-    // que seriam descartados adiante.
-    stream
-      ?.getVideoTracks()[0]
-      ?.applyConstraints({ frameRate: { ideal: fps, max: fps } })
-      .catch(() => {});
+    applyCaptureRate(stream?.getVideoTracks()[0]);
+    emitStatus();
   }
 
-  const getSettings = () => ({ bitrate, fps });
+  const getSettings = () => ({ bitrate, fps, adaptive: adapt.isEnabled() });
 
   function cleanup() {
     stream?.getTracks().forEach((t) => t.stop());

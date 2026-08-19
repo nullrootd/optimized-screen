@@ -1,7 +1,7 @@
 import { DiscordSDK } from '@discord/embedded-app-sdk';
 import { createPlayer } from './player.js';
 import { createAudio } from './audio.js';
-import { createBroadcaster } from '../../shared/broadcaster.js';
+import { createBroadcaster, AUTO_BITRATE, AUTO_FPS } from '../../shared/broadcaster.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -13,17 +13,17 @@ const inDiscord = params.has('frame_id');
 // Dentro da Activity todo tráfego precisa passar pelo proxy do Discord.
 const P = inDiscord ? '/.proxy' : '';
 
-// Um decoder e um canvas por transmissor, indexados pelo slot que o servidor
-// atribuiu. Os canvas vivem fora do DOM entre renderizações e são movidos para
-// dentro do tile de cada pessoa — detachar não apaga o conteúdo nem invalida o
-// contexto 2D, então os decoders seguem desenhando sem saber de nada.
-const streams = new Map(); // slot -> { userId, canvas, player }
+// Um decoder e uma superfície (canvas ou <video>) por transmissor, indexados
+// pelo slot que o servidor atribuiu. As superfícies vivem fora do DOM entre
+// renderizações e são movidas para o tile — detachar não apaga o conteúdo.
+const streams = new Map(); // slot -> { userId, player }
 
-// Transmissões anunciadas pelo servidor, assistidas ou não. Assistir é opt-in:
-// sem pedir, o servidor nem envia os quadros — a economia de banda depende
-// disso, filtrar só na exibição gastaria a mesma saída.
+// Transmissões anunciadas pelo servidor, assistidas ou não. Assistir é opt-in
+// no servidor: sem pedir, ele nem envia os quadros. O cliente, no modo
+// automático, pede a primeira tela da sala sozinho.
 const available = new Map(); // slot -> { userId, config }
 const watching = new Set(); // slots que eu pedi para assistir
+const skippedWatch = new Set(); // telas que a pessoa largou de propósito
 
 let sdk = null;
 let session = null;
@@ -127,6 +127,7 @@ const slotOf = (userId) =>
 function watchSlot(slot) {
   const info = available.get(slot);
   if (!info) return;
+  skippedWatch.delete(slot);
   watching.add(slot);
   ws?.send(JSON.stringify({ type: 'watch', slot }));
   // O config pode já ter chegado; se não, ele chega logo e dispara o start.
@@ -138,11 +139,31 @@ function watchSlot(slot) {
 }
 
 function unwatchSlot(slot) {
+  skippedWatch.add(slot);
   watching.delete(slot);
   ws?.send(JSON.stringify({ type: 'unwatch', slot }));
   closeStream(slot);
   renderGrid();
   renderBar();
+}
+
+function autoWatchOn() {
+  return read('autoWatch') !== '0';
+}
+
+function setAutoWatch(on) {
+  store('autoWatch', on ? '1' : '0');
+  $('autoWatch').checked = on;
+  $('autoWatchPanel').checked = on;
+  if (on) maybeAutoWatch();
+}
+
+function maybeAutoWatch(slot) {
+  if (!autoWatchOn() || watching.size > 0) return;
+  const alvo =
+    slot ?? [...available.keys()].find((s) => !skippedWatch.has(s) && !watching.has(s));
+  if (alvo == null || skippedWatch.has(alvo)) return;
+  watchSlot(alvo);
 }
 
 // --------------------------------------------------------------------- grade
@@ -356,8 +377,9 @@ function buildTile(p, { palco = false, semVideo = false } = {}) {
   // Com a forma do vídeo no próprio tile, a moldura passa a abraçar a imagem.
   // Sem isto, uma tela 16:9 dentro de um palco largo e baixo encolhia até caber
   // na altura e sobrava um retângulo preto ocupando metade da área.
-  if (palco && stream?.canvas.width) {
-    tile.style.aspectRatio = `${stream.canvas.width} / ${stream.canvas.height}`;
+  if (palco && stream) {
+    const { width, height } = stream.player.getNativeSize();
+    if (width && height) tile.style.aspectRatio = `${width} / ${height}`;
   }
 
   const aoClicar = () => {
@@ -367,7 +389,7 @@ function buildTile(p, { palco = false, semVideo = false } = {}) {
   };
 
   if (stream) {
-    tile.append(stream.canvas);
+    tile.append(stream.player.el);
     tile.title = palco
       ? telaCheia
         ? 'Clique para sair da tela cheia'
@@ -528,7 +550,7 @@ function openProfile() {
   $('profileId').textContent = inDiscord ? `Discord · ${session.user.id}` : 'modo local';
   $('profileInput').value = me.name;
 
-  $('profileModal').hidden = false;
+  $('profileModal').hidden = false;
   $('profileInput').focus();
   $('profileInput').select();
 }
@@ -766,14 +788,12 @@ function renderBar() {
 function openStream(slot, userId) {
   closeStream(slot);
 
-  const canvas = document.createElement('canvas');
   const s = {
     userId,
-    canvas,
     // Vira true no primeiro quadro desenhado. Até lá o tile mostra "Conectando…"
     // em vez de uma caixa preta que não se distingue de um travamento.
     started: false,
-    player: createPlayer(canvas, {
+    player: createPlayer({
       onError: (m) => toast(m, true),
       onTamanho: () => {
         s.started = true;
@@ -814,7 +834,7 @@ function closeStream(slot) {
   if (!s) return;
   s.player.stop();
   s.audio?.stop();
-  s.canvas.remove();
+  s.player.el.remove();
   streams.delete(slot);
   // Quem estava no palco saiu: renderGrid escolhe a próxima na próxima passada.
   if (activeSlot === slot) activeSlot = null;
@@ -869,6 +889,9 @@ boot().catch((err) => {
 });
 
 async function boot() {
+  $('autoWatch').checked = autoWatchOn();
+  $('autoWatchPanel').checked = autoWatchOn();
+
   // O painel inicial é estático. Sem este vigia, qualquer espera que não
   // termine fica com a cara de "Conectando…" para sempre, sem dizer o que
   // está faltando — que foi exatamente como este arranque ja travou.
@@ -1033,6 +1056,7 @@ function limparSala() {
   closeAllStreams();
   available.clear();
   watching.clear();
+  skippedWatch.clear();
   participants = [];
   lastRoomState = null;
   activeSlot = null;
@@ -1184,7 +1208,7 @@ function askPassword(room, error) {
   $('joinError').textContent = error ?? '';
   $('joinError').hidden = !error;
   if (!error) $('joinPass').value = '';
-  $('joinModal').hidden = false;
+  $('joinModal').hidden = false;
   $('joinPass').focus();
 }
 
@@ -1481,16 +1505,21 @@ function connect() {
         info.watchers = s.watchers ?? [];
         available.set(s.slot, info);
       }
-      for (const slot of [...available.keys()]) if (!live.has(slot)) available.delete(slot);
+      for (const slot of [...available.keys()]) if (!live.has(slot)) {
+        available.delete(slot);
+        skippedWatch.delete(slot);
+      }
       for (const slot of [...streams.keys()]) if (!live.has(slot)) closeStream(slot);
       for (const slot of [...watching]) if (!live.has(slot)) watching.delete(slot);
+      maybeAutoWatch();
       renderGrid();
       renderBar();
     } else if (msg.type === 'stream-start') {
-      // Só anuncia; ninguém assiste até pedir.
+      // Só anuncia; o servidor não manda quadros até alguém pedir.
       available.set(msg.slot, { userId: msg.userId, config: null });
       watching.delete(msg.slot);
       closeStream(msg.slot);
+      maybeAutoWatch(msg.slot);
       renderGrid();
     } else if (msg.type === 'config') {
       const info = available.get(msg.slot);
@@ -1506,6 +1535,7 @@ function connect() {
     } else if (msg.type === 'stream-stop') {
       available.delete(msg.slot);
       watching.delete(msg.slot);
+      skippedWatch.delete(msg.slot);
       endStream(msg.slot);
     } else if (msg.type === 'room-gone') {
       roomTokens = null;
@@ -1527,6 +1557,7 @@ function connect() {
     closeAllStreams();
     available.clear();
     watching.clear();
+    skippedWatch.clear();
     participants = [];
     renderGrid();
 
@@ -1603,6 +1634,15 @@ $('share').addEventListener('click', () => {
  */
 let modalMode = 'start';
 
+function qualityFromUi() {
+  const auto = $('mQuality').value === 'auto';
+  const fps = Number($('mFps').value) || AUTO_FPS;
+  if (auto) {
+    return { adaptive: true, bitrate: AUTO_BITRATE, fps: AUTO_FPS, maxFps: fps < 60 ? 60 : fps };
+  }
+  return { adaptive: false, bitrate: Number($('mQuality').value), fps, maxFps: fps };
+}
+
 function openModal(mode) {
   modalMode = mode;
   const live = mode === 'live';
@@ -1622,11 +1662,17 @@ function openModal(mode) {
       : 'Som de uma aba';
 
     const s = myBroadcast.getSettings();
-    $('mQuality').value = String(s.bitrate);
+    $('mQuality').value = s.adaptive ? 'auto' : String(s.bitrate);
     $('mFps').value = String(s.fps);
+    $('mAdvancedFields').hidden = read('qualityAdvanced') !== '1';
+  } else {
+    $('mAdvancedFields').hidden = read('qualityAdvanced') !== '1';
   }
 
-  $('modal').hidden = false;
+  $('autoWatch').checked = autoWatchOn();
+  $('autoWatchPanel').checked = autoWatchOn();
+
+  $('modal').hidden = false;
 }
 
 $('liveSettings').addEventListener('click', () => openModal('live'));
@@ -1708,10 +1754,13 @@ async function broadcastFromHere() {
 
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
 
+  const q = qualityFromUi();
   const b = createBroadcaster({
     wsUrl: `${proto}://${location.host}${P}/ws?t=${encodeURIComponent(shareToken)}`,
-    bitrate: Number($('mQuality').value),
-    fps: Number($('mFps').value),
+    bitrate: q.bitrate,
+    fps: q.fps,
+    adaptive: q.adaptive,
+    maxFps: q.maxFps,
     audio: $('mAudio').checked,
     onAviso: (m) => toast(m, true),
     onEnd: () => {
@@ -1739,6 +1788,15 @@ async function broadcastFromHere() {
 
 $('modalCancel').addEventListener('click', closeModal);
 
+$('mAdvancedToggle').addEventListener('click', () => {
+  const abrir = $('mAdvancedFields').hidden;
+  $('mAdvancedFields').hidden = !abrir;
+  store('qualityAdvanced', abrir ? '1' : '0');
+});
+
+$('autoWatch').addEventListener('change', () => setAutoWatch($('autoWatch').checked));
+$('autoWatchPanel').addEventListener('change', () => setAutoWatch($('autoWatchPanel').checked));
+
 // Clique no fundo fecha; dentro do card, não.
 $('modal').addEventListener('click', (e) => {
   if (e.target === $('modal')) closeModal();
@@ -1747,9 +1805,11 @@ $('modal').addEventListener('click', (e) => {
 $('modalGo').addEventListener('click', async () => {
   // Ajuste no ar: aplica e fecha, sem tocar na captura.
   if (modalMode === 'live') {
+    const q = qualityFromUi();
     myBroadcast?.setQuality({
-      bitrate: Number($('mQuality').value),
-      fps: Number($('mFps').value),
+      bitrate: q.bitrate,
+      fps: q.fps,
+      adaptive: q.adaptive,
     });
     closeModal();
     return;
@@ -1764,9 +1824,10 @@ $('modalGo').addEventListener('click', async () => {
 
   // As opções seguem na URL: a página de captura já abre configurada, sem
   // pedir as mesmas escolhas de novo.
+  const q = qualityFromUi();
   const url = new URL(roomTokens.shareUrl);
-  url.searchParams.set('q', $('mQuality').value);
-  url.searchParams.set('fps', $('mFps').value);
+  url.searchParams.set('q', q.adaptive ? 'auto' : String(q.bitrate));
+  url.searchParams.set('fps', String(q.adaptive ? q.maxFps : q.fps));
   url.searchParams.set('som', $('mAudio').checked ? '1' : '0');
 
   if (inDiscord) {
@@ -1792,7 +1853,7 @@ $('newRoom').addEventListener('click', () => {
   if (!session) return;
   $('createName').value = '';
   $('createPass').value = '';
-  $('createModal').hidden = false;
+  $('createModal').hidden = false;
   $('createName').focus();
 });
 
@@ -1859,7 +1920,7 @@ $('roomSave').addEventListener('click', async () => {
 function openRoomSettings() {
   $('roomSub').textContent = roomInfo?.name ?? '';
   $('roomPass').value = '';
-  $('roomModal').hidden = false;
+  $('roomModal').hidden = false;
   $('roomPass').focus();
 }
 

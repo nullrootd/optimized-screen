@@ -260,7 +260,8 @@ body {
 
    Com a caixa definida, `contain` faz o resto: reduz ou amplia preservando a
    proporção, nunca corta, e deixa o fundo preto aparecer nas sobras. */
-.tile canvas {
+.tile canvas,
+.tile video.stream-surface {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -845,6 +846,20 @@ button {
   font-variant-numeric: tabular-nums;
 }
 
+.panel-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 13px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.panel-check input {
+  accent-color: var(--accent);
+}
+
 .panel-btn {
   width: 100%;
   margin-top: 10px;
@@ -854,6 +869,11 @@ button {
   background: transparent;
   color: var(--muted);
   font: 500 12.5px/1 inherit;
+  cursor: pointer;
+}
+
+#mAdvancedFields {
+  margin-bottom: 8px;
 }
 
 .panel-btn:hover {

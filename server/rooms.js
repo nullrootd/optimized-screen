@@ -20,7 +20,7 @@ const MAX_BROADCASTERS = 4;
 // Sala é objeto em memória criado por qualquer pessoa autenticada: sem teto,
 // um laço de "criar sala" consome a RAM do processo.
 const MAX_ROOMS_PER_INSTANCE = 20;
-const MAX_BUFFERED_BYTES = 2 * 1024 * 1024;
+const MAX_BUFFERED_BYTES = 4 * 1024 * 1024;
 const MAX_NAME = 32;
 const MAX_ROOM_NAME = 40;
 
@@ -542,12 +542,6 @@ export function pushChunk(room, entry, chunk) {
     }
 
     if (isKeyframe) {
-      if (v.bufferedAmount > MAX_BUFFERED_BYTES * 2) {
-        room.droppedChunks++;
-        entry.droppedChunks++;
-        droppedCopies++;
-        continue;
-      }
       v.send(chunk);
       sentCopies++;
       v.__mediaBytesOut = (v.__mediaBytesOut ?? 0) + bytes;

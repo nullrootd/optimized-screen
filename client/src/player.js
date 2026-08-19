@@ -2,28 +2,38 @@
  * Player WebCodecs.
  *
  * Dentro da Activity não existe WebRTC, mas WebCodecs não é bloqueado por
- * Permissions Policy — então dá para decodificar quadro a quadro e desenhar
- * num canvas, sem passar por container nem por MediaSource.
+ * Permissions Policy — então dá para decodificar quadro a quadro sem container.
  *
- * O canvas mantém SEMPRE o tamanho nativo do vídeo no buffer interno
- * (canvas.width/height). Isso dá a ele uma proporção intrínseca, e o CSS
- * apenas o limita com max-width/max-height — o navegador então reduz
- * preservando a proporção, por construção.
- *
- * Dimensionar o buffer pelo tamanho de exibição, como cheguei a tentar, faz a
- * proporção do vídeo passar a depender do formato do container e distorce a
- * imagem durante o redimensionamento.
+ * Quando o navegador tem MediaStreamTrackGenerator, os quadros vão para um
+ * <video>: o compositor nativo segura 60–120 fps melhor do que canvas 2D.
+ * Sem isso, cai no canvas (buffer sempre no tamanho nativo, CSS só limita).
  */
 
-export function createPlayer(canvas, { onError, onTamanho } = {}) {
+export function createPlayer({ onError, onTamanho } = {}) {
+  const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
+  if (ctx) ctx.imageSmoothingEnabled = false;
+
+  const video = document.createElement('video');
+  video.muted = true;
+  video.playsInline = true;
+  video.autoplay = true;
+
+  const useGenerator = typeof MediaStreamTrackGenerator === 'function';
+  canvas.className = 'stream-surface';
+  video.className = 'stream-surface';
+  let surface = useGenerator ? video : canvas;
 
   let decoder = null;
+  let generator = null;
+  let writer = null;
   let needKeyframe = true;
   let lastLagMs = 0;
   let framesDrawn = 0;
+  let lastW = 0;
+  let lastH = 0;
   // Quem espera precisa saber quando a espera acabou: entre pedir para assistir
-  // e o primeiro quadro cabe um keyframe inteiro de atraso, e o canvas preto
+  // e o primeiro quadro cabe um keyframe inteiro de atraso, e o quadro preto
   // desse intervalo é idêntico a um travamento.
   let virgem = true;
 
@@ -50,9 +60,29 @@ export function createPlayer(canvas, { onError, onTamanho } = {}) {
     try {
       decoder.configure(config);
     } catch {
-      onError?.(`Codec não suportado por este navegador: ${config.codec}`);
-      decoder = null;
-      return false;
+      delete config.hardwareAcceleration;
+      try {
+        decoder.configure(config);
+      } catch {
+        onError?.(`Codec não suportado por este navegador: ${config.codec}`);
+        decoder = null;
+        return false;
+      }
+    }
+
+    if (useGenerator) {
+      try {
+        generator = new MediaStreamTrackGenerator({ kind: 'video' });
+        writer = generator.writable.getWriter();
+        video.srcObject = new MediaStream([generator]);
+        video.play().catch(() => {});
+        surface = video;
+      } catch (err) {
+        console.warn('[track generator]', err.message);
+        generator = null;
+        writer = null;
+        surface = canvas;
+      }
     }
 
     needKeyframe = true;
@@ -89,26 +119,48 @@ export function createPlayer(canvas, { onError, onTamanho } = {}) {
   }
 
   function draw(frame) {
-    // Buffer no tamanho nativo do vídeo: é isso que define a proporção
-    // intrínseca do elemento, e é o que impede o CSS de distorcer.
-    let mudou = false;
-    if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
-      canvas.width = frame.displayWidth;
-      canvas.height = frame.displayHeight;
-      mudou = true;
+    const w = frame.displayWidth;
+    const h = frame.displayHeight;
+    const mudou = w !== lastW || h !== lastH;
+    lastW = w;
+    lastH = h;
+
+    if (writer) {
+      if (writer.desiredSize != null && writer.desiredSize <= 0) {
+        frame.close();
+      } else {
+        writer.write(frame).catch(() => {
+          try {
+            frame.close();
+          } catch {}
+          cairNoCanvas();
+        });
+      }
+    } else {
+      if (canvas.width !== w || canvas.height !== h) {
+        canvas.width = w;
+        canvas.height = h;
+        ctx.imageSmoothingEnabled = false;
+      }
+      ctx.drawImage(frame, 0, 0, w, h);
+      frame.close();
     }
 
-    ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
-
-    // VideoFrame segura memória de GPU; sem close() a aba trava em segundos.
-    frame.close();
     framesDrawn++;
 
-    // Avisa no primeiro quadro e sempre que a resolução muda: quem desenha o
-    // palco precisa das duas coisas — tirar o "conectando" e refazer a forma.
     if (virgem || mudou) {
       virgem = false;
       onTamanho?.();
+    }
+  }
+
+  function cairNoCanvas() {
+    writer = null;
+    generator = null;
+    video.srcObject = null;
+    if (surface === video) {
+      video.replaceWith(canvas);
+      surface = canvas;
     }
   }
 
@@ -121,6 +173,13 @@ export function createPlayer(canvas, { onError, onTamanho } = {}) {
     decoder = null;
     needKeyframe = true;
     lastLagMs = 0;
+    virgem = true;
+
+    writer?.close().catch(() => {});
+    writer = null;
+    generator = null;
+    video.srcObject = null;
+
     if (canvas.width && canvas.height) {
       ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -130,11 +189,15 @@ export function createPlayer(canvas, { onError, onTamanho } = {}) {
   /** Atraso aproximado em ms. Exato na mesma máquina; entre máquinas, sujeito a desvio de relógio. */
   const getLag = () => lastLagMs;
 
+  function getNativeSize() {
+    return { width: lastW, height: lastH };
+  }
+
   /** Resolução nativa do vídeo e tamanho de exibição — para diagnóstico. */
   function getSizes() {
-    const rect = canvas.getBoundingClientRect();
+    const rect = surface.getBoundingClientRect();
     return {
-      video: `${canvas.width}×${canvas.height}`,
+      video: lastW && lastH ? `${lastW}×${lastH}` : '—',
       box: `${Math.round(rect.width)}×${Math.round(rect.height)}`,
     };
   }
@@ -145,7 +208,18 @@ export function createPlayer(canvas, { onError, onTamanho } = {}) {
     return n;
   }
 
-  return { start, push, stop, getLag, takeFrameCount, getSizes };
+  return {
+    get el() {
+      return surface;
+    },
+    start,
+    push,
+    stop,
+    getLag,
+    takeFrameCount,
+    getSizes,
+    getNativeSize,
+  };
 }
 
 function deserialize(c) {
@@ -156,6 +230,7 @@ function deserialize(c) {
     // Reduz o buffering interno do decoder — sem isso ele acumula alguns
     // quadros antes de emitir o primeiro.
     optimizeForLatency: true,
+    hardwareAcceleration: 'prefer-hardware',
   };
 
   if (c.description) {

@@ -159,10 +159,31 @@ video {
 }
 
 .preset {
-  margin: 0 0 4px;
+  margin: 0 0 16px;
   color: var(--muted);
   font-size: 13px;
   font-variant-numeric: tabular-nums;
+}
+
+.hud {
+  margin: 0 0 12px;
+  color: var(--text);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ghost {
+  width: auto;
+  margin: 0 0 12px;
+  padding: 6px 0;
+  background: transparent;
+  color: var(--muted);
+  font: 500 13px/1 inherit;
+}
+
+.ghost:hover:not(:disabled) {
+  color: var(--text);
+  filter: none;
 }
 
 .note {

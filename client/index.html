@@ -104,6 +104,10 @@
           <div class="panel-row"><span>Quadros</span><strong id="pFps">—</strong></div>
           <div class="panel-row"><span>Resolução</span><strong id="pRes">—</strong></div>
           <div class="panel-row"><span>Som</span><strong id="pSom">—</strong></div>
+          <label class="panel-check">
+            <input id="autoWatchPanel" type="checkbox" checked />
+            Assistir automaticamente
+          </label>
           <button id="probe" class="panel-btn">Testar captura no iframe</button>
         </div>
 
@@ -216,27 +220,13 @@
           <h2 id="modalTitle">Compartilhar sua tela</h2>
           <p id="modalSub" class="modal-sub">Escolha a tela e comece a transmitir.</p>
 
-          <label class="field">
-            <span>Qualidade</span>
-            <select id="mQuality">
-              <option value="1000000">Leve — 1 Mbps</option>
-              <option value="2500000" selected>Boa — 2,5 Mbps</option>
-              <option value="5000000">Alta — 5 Mbps</option>
-              <option value="8000000">Máxima — 8 Mbps</option>
-            </select>
-          </label>
-
-          <label class="field">
-            <span>Taxa de quadros</span>
-            <select id="mFps">
-              <option value="15">15 fps — economiza banda</option>
-              <option value="30" selected>30 fps — mais fluido</option>
-              <option value="60">60 fps — jogo e vídeo, exija 5 Mbps ou mais</option>
-            </select>
+          <label class="field-check">
+            <input id="autoWatch" type="checkbox" checked />
+            <span>Assistir telas automaticamente</span>
           </label>
 
           <label class="field-check">
-            <input id="mAudio" type="checkbox" />
+            <input id="mAudio" type="checkbox" checked />
             <span>
               Compartilhar o som
               <em class="opt">
@@ -246,6 +236,31 @@
               </em>
             </span>
           </label>
+
+          <button id="mAdvancedToggle" class="panel-btn" type="button">Ajustes avançados</button>
+
+          <div id="mAdvancedFields" hidden>
+            <label class="field">
+              <span>Qualidade</span>
+              <select id="mQuality">
+                <option value="auto" selected>Automático — 60+ fps</option>
+                <option value="3000000">Leve — 3 Mbps</option>
+                <option value="6000000">Boa — 6 Mbps</option>
+                <option value="10000000">Alta — 10 Mbps</option>
+                <option value="16000000">Máxima — 16 Mbps</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span>Taxa de quadros</span>
+              <select id="mFps">
+                <option value="30">30 fps</option>
+                <option value="60">60 fps</option>
+                <option value="90">90 fps</option>
+                <option value="120" selected>120 fps — teto no automático</option>
+              </select>
+            </label>
+          </div>
 
           <button id="modalSwap" class="panel-btn" hidden>Trocar a tela compartilhada</button>
           <button id="modalSom" class="panel-btn" hidden>Som de uma aba</button>

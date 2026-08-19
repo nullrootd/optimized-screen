@@ -1,12 +1,16 @@
-![Como não compartilhar tela no Discord](como-nao-compartilhar-tela-no-discord-banner.png)
-
 # Sala de Tela
 
 Mostre sua tela para quem está na mesma call do Discord.
-Uma pessoa compartilha, todo mundo assiste sem sair do Discord.
+Uma pessoa compartilha, todo mundo assiste sem sair do Discord — com qualidade
+automática em 60+ fps.
 
 Também funciona como site normal, fora do Discord, com salas que você cria e
 compartilha por link.
+
+Este projeto foi inspirado no [discord-screen](https://github.com/Jc007zZ/discord-screen)
+do [Jc007zZ](https://github.com/Jc007zZ): a ideia, o desenho (WebCodecs +
+WebSocket, captura fora do iframe) e boa parte do código vêm de lá. Daqui pra
+frente o foco é deixar o uso mais simples e a imagem mais fluida.
 
 ---
 
@@ -29,11 +33,11 @@ Para *assistir*, qualquer navegador serve.
 
 **1.** Baixe este projeto e descompacte numa pasta.
 
-**2.** Abra a pasta, clique na barra de endereço do explorador de arquivos,
-digite `cmd` e aperte Enter. Vai abrir uma janela preta — é ali que você digita
-os comandos.
+**2.** Clique duas vezes em `start.bat`. Ele instala o que faltar e sobe
+tudo numa janela só.
 
-**3.** Digite, um de cada vez, esperando cada um terminar:
+Se preferir o terminal: abra a pasta, clique na barra de endereço, digite
+`cmd` e aperte Enter. Depois:
 
 ```
 npm install
@@ -48,6 +52,10 @@ Na primeira vez ele baixa o `cloudflared` (uns 50 MB) e guarda em `.cache/`
 dentro da pasta do projeto. Você não instala nada à mão.
 
 Para desligar, aperte `Ctrl + C` na janela preta. Isso derruba tudo junto.
+
+A qualidade padrão é **automática**: começa em 1080p / 60 fps e sobe até 120
+quando a máquina e a rede aguentam, ou desce resolução para não cair abaixo de
+60. A primeira tela da sala começa a tocar sozinha.
 
 ### Só quero testar no navegador
 
@@ -208,6 +216,7 @@ Aí nenhum túnel é necessário.
 
 | Comando | Para quê |
 |---|---|
+| `start.bat` | No Windows: instala se faltar e liga tudo. |
 | `npm install` | Baixa o que o programa precisa. Só na primeira vez. |
 | `npm run start:fast` | **Liga tudo.** Configura se faltar, e sobe numa janela só. |
 | `npm run tunel:criar` | Uma vez só: cria um endereço fixo, que não muda mais. |
@@ -224,18 +233,3 @@ Para quem mexe no código:
 | `npm run tunel` | Só o túnel, numa janela separada. |
 
 ---
-
-## O que ainda não dá
-
-- **Compartilhar do celular.** Nenhum navegador de celular permite.
-- **Som de programa instalado** em tela cheia. Só som de aba (veja acima).
-- **Muita gente ao mesmo tempo.** Cada pessoa assistindo consome a qualidade
-  escolhida, inteira. Em 2,5 Mb/s, cinco pessoas já são 12,5 Mb/s de subida; em
-  8 Mb/s, são 40.
-- **60 fps em qualquer computador.** Se o navegador não tiver codificação por
-  hardware, ele não dá conta de 60 quadros em tela grande e entrega menos. A
-  página de captura avisa quando isso acontece.
-- **Mais de 4 telas ao mesmo tempo** na mesma sala.
-
-Se você mexe em código e quer entender as decisões por trás disso,
-veja [docs/como-funciona.md](docs/como-funciona.md).

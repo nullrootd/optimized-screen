@@ -23,7 +23,7 @@ aba normal do navegador                                  atividade (iframe)
   VideoEncoder                                                 │
   └──── WebSocket binário ────►  repassa sem                   │
                                  abrir o quadro ───────────────►
-                                                          VideoDecoder → canvas
+                                                          VideoDecoder → <video>
 ```
 
 Quem assiste nunca sai do Discord. Só quem mostra passa por uma aba.
@@ -55,8 +55,26 @@ completo: alimentar um decodificador frio com eles só produz erro.
 
 O servidor não manda os quadros de uma tela para ninguém que não tenha pedido
 explicitamente. É o que segura a banda: filtrar só na exibição gastaria a mesma
-saída de rede. Por isso cada tela aparece primeiro como um convite
-("Assistir tela") em vez de já começar a tocar.
+saída de rede.
+
+O **cliente** pede sozinho a primeira tela da sala (modo automático, ligado por
+padrão). Desligar "Assistir telas automaticamente" volta ao convite
+("Assistir tela"). Quem larga uma tela de propósito não a recebe de novo até
+pedir.
+
+## Qualidade automática
+
+O padrão é 1080p / 60 fps / ~10 Mb/s, com teto de 120 fps. A cada segundo o
+transmissor olha a fila do encoder, o fps real e o `bufferedAmount` do
+WebSocket:
+
+- CPU/GPU saturado → baixa resolução (1080 → 900 → 720), **sem** soltar os 60
+  fps. Só cai para 30 se nem 720p60 aguentar (quase sempre encoder software).
+- Rede saturada → baixa bitrate (16 → 10 → 6 → 3 Mb/s).
+- Folga por ~3 s → sobe bitrate, depois resolução, depois fps (60 → 90 → 120).
+
+O codec preferido é H.264 High Level 4.2+ com `prefer-hardware`. Baseline 3.0
+e VP8 ficam no fim da fila: 1080p60 neles não segura.
 
 ## Salas
 
@@ -128,18 +146,25 @@ Controle vai em JSON: `start`, `config`, `audio-config`, `stop`
 
 ## Detalhes que não são acidentais
 
-- **`latencyMode: 'realtime'`** no codificador e **`optimizeForLatency: true`**
-  no decodificador. Sem eles, ambos acumulam quadros antes de emitir — comprime
-  melhor, mas é atraso que nunca mais sai.
-- **`frame.close()`** depois de desenhar. `VideoFrame` segura memória de GPU;
-  sem isso a aba trava em segundos.
+- **`latencyMode: 'realtime'`** no codificador, **`bitrateMode: 'variable'`**
+  quando o navegador aceita, e **`optimizeForLatency: true`** no decodificador.
+  Sem eles, ambos acumulam quadros antes de emitir — comprime melhor, mas é
+  atraso que nunca mais sai.
+- **`hardwareAcceleration: 'prefer-hardware'`** nos dois lados. Sem encoder de
+  GPU, o adaptativo desce resolução e avisa.
+- **`frame.close()`** depois de desenhar (ou depois de o `<video>` assumir o
+  quadro). `VideoFrame` segura memória de GPU; sem isso a aba trava em segundos.
 - **Descartar quadro quando a fila do codificador passa de 2.** Fila vira
   atraso permanente. Melhor perder um quadro do que carregar o atraso.
-- **`track.contentHint = 'text'`.** Avisa que é tela, não vídeo — mantém texto
-  nítido em vez de suavizar bordas.
-- **Backpressure no relay.** Se o socket de alguém acumula mais de 2 MB, o
-  servidor descarta quadros para essa pessoa em vez de enfileirar. Sem isso, um
-  espectador com internet ruim derruba o processo por consumo de memória.
+- **`track.contentHint = 'motion'`** em 60+ fps (jogo/vídeo); `'text'` abaixo
+  disso, para UI nítida.
+- **Player via `MediaStreamTrackGenerator` + `<video>`** quando existe — o
+  compositor do Chrome segura 60–120 fps melhor que `canvas.drawImage`. Canvas
+  continua como fallback.
+- **Backpressure no relay.** Se o socket de alguém acumula mais de 4 MB, o
+  servidor descarta deltas para essa pessoa. Keyframe **não** se descarta: quem
+  entra no meio ficaria cego. Sem o teto, um espectador com internet ruim
+  derruba o processo por consumo de memória.
 - **`/.proxy/`** em todo fetch e WebSocket feito de dentro da atividade — é
   assim que o Discord roteia para o seu servidor.
 - **Client ID vem do servidor, não do build.** Embutir no bundle obrigava a
@@ -156,10 +181,11 @@ server/
   public/share.*  a aba de captura, que roda FORA do Discord
 client/
   src/main.js     interface da sala e conexão
-  src/player.js   decodifica os quadros e desenha no canvas
+  src/player.js   decodifica e manda os quadros para <video> (ou canvas)
   src/audio.js    decodifica o som e agenda a reprodução
 shared/
   broadcaster.js  captura + codificação, usada pela aba e pela atividade
+  adaptive.js     sobe/desce bitrate, resolução e fps em torno de 60 fps
 scripts/
   configurar.mjs  assistente de configuração
   tunel.mjs       sobe o túnel e grava o endereço no .env
@@ -174,8 +200,8 @@ npm run smoke    # noutra
 ```
 
 Cobre autenticação, senha de sala e bloqueio por tentativas, a máquina de
-estados do keyframe, "assistir é opt-in", vários transmissores sem misturar os
-streams, e isolamento entre salas e instâncias.
+estados do keyframe, "assistir é opt-in" no servidor, vários transmissores sem
+misturar os streams, e isolamento entre salas e instâncias.
 
 ## Rodando enquanto mexe no código
 

@@ -8,7 +8,7 @@
  * Toda a lógica de captura e codificação vive em /shared/broadcaster.js, a mesma
  * usada dentro da Activity — aqui é só a interface.
  */
-import { createBroadcaster, supportError } from '/shared/broadcaster.js?v=4';
+import { createBroadcaster, supportError, AUTO_BITRATE, AUTO_FPS } from '/shared/broadcaster.js?v=5';
 
 const $ = (id) => document.getElementById(id);
 
@@ -16,34 +16,6 @@ const query = new URLSearchParams(location.search);
 const token = query.get('t');
 
 let broadcaster = null;
-
-// Quantas leituras seguidas ficaram bem abaixo do alvo. Uma sozinha não diz
-// nada: o primeiro segundo sempre sai curto, e uma engasgada pontual também.
-let curtas = 0;
-let ritmoAvisado = false;
-
-/**
- * Avisa quando o computador não está entregando os quadros pedidos.
- *
- * O encoder por software (vp8, quando não há H264 por hardware) não acompanha
- * 60 fps em tela grande. O backpressure então descarta quadros — o que é a
- * decisão certa, porque fila no encoder vira atraso que nunca mais sai — mas
- * sem este aviso a pessoa escolhe 60, recebe 35 e não fica sabendo.
- */
-function conferirRitmo({ fps, seconds }) {
-  const alvo = Number($('fps').value);
-  if (ritmoAvisado || seconds < 4) return;
-
-  curtas = fps < alvo * 0.7 ? curtas + 1 : 0;
-  if (curtas < 4) return;
-
-  ritmoAvisado = true;
-  setStatus(
-    `Seu computador está entregando ~${fps} dos ${alvo} quadros pedidos. ` +
-      'Para uma imagem mais estável, pare e escolha uma taxa menor.',
-    'aviso'
-  );
-}
 
 function setStatus(msg, kind = '') {
   const el = $('status');
@@ -65,15 +37,30 @@ function readTokenPayload() {
   }
 }
 
+function qualityFromUi() {
+  const auto = $('quality').value === 'auto';
+  const fps = Number($('fps').value) || AUTO_FPS;
+  if (auto) {
+    return { adaptive: true, bitrate: AUTO_BITRATE, fps: AUTO_FPS, maxFps: fps < 60 ? 60 : fps };
+  }
+  return { adaptive: false, bitrate: Number($('quality').value), fps, maxFps: fps };
+}
+
+function rotuloPreset() {
+  const q = qualityFromUi();
+  const comSom = $('withAudio').checked ? ' · com som' : '';
+  if (q.adaptive) return `Automático · 60+ fps${comSom}`;
+  const mbps = (q.bitrate / 1e6).toFixed(1).replace('.', ',');
+  return `${mbps} Mb/s · ${q.fps} fps${comSom}`;
+}
+
 // ------------------------------------------------------------------ arranque
 
 const payload = token && readTokenPayload();
-// requireChromium: nos demais navegadores a captura sai visivelmente pior.
 const missing = supportError({ requireChromium: true });
 
 if (!payload) {
   fail('Link inválido.', 'Volte à atividade no Discord e clique em compartilhar novamente.');
-  // `exp` é opcional: tokens de sala não expiram, a sala é que fecha.
 } else if (payload.exp && payload.exp * 1000 < Date.now()) {
   fail('Link expirado.', 'Gere um novo pela atividade.');
 } else if (missing) {
@@ -83,69 +70,78 @@ if (!payload) {
   applyPresets();
   $('start').addEventListener('click', start);
   $('stop').addEventListener('click', () => broadcaster?.stop('Transmissão encerrada.'));
+  $('advanced').addEventListener('click', () => {
+    const rows = document.querySelectorAll('#setup .row');
+    const hide = ![...rows].some((r) => r.hidden);
+    for (const row of rows) row.hidden = hide;
+    $('advanced').textContent = hide ? 'Ajustes avançados' : 'Ocultar ajustes';
+    $('presetLine').textContent = rotuloPreset();
+  });
+  $('quality').addEventListener('change', () => {
+    $('presetLine').textContent = rotuloPreset();
+  });
+  $('fps').addEventListener('change', () => {
+    $('presetLine').textContent = rotuloPreset();
+  });
 }
 
-/**
- * Aplica as opções escolhidas no modal da Activity, que chegam pela URL.
- *
- * Com elas definidas, os seletores saem de cena: repetir a mesma escolha aqui
- * só confundiria. Sem elas, a página segue mostrando os controles.
- */
 function applyPresets() {
   const q = query.get('q');
   const fps = query.get('fps');
   const som = query.get('som');
 
-  // A opção de som veio decidida da atividade, então a caixa some junto com os
-  // seletores — repetir a mesma escolha aqui só confundiria.
   if (som !== null) {
     $('withAudio').checked = som === '1';
     document.querySelector('.check').hidden = true;
   }
 
-  if (!q && !fps) return;
-
-  if (q) $('quality').value = q;
-  if (fps) $('fps').value = fps;
-
   for (const row of document.querySelectorAll('#setup .row')) row.hidden = true;
 
-  const mbps = (Number($('quality').value) / 1e6).toFixed(1).replace('.', ',');
-  const comSom = $('withAudio').checked ? ' · com som' : '';
-  $('presetLine').textContent = `${mbps} Mb/s · ${$('fps').value} fps${comSom}`;
+  if (q) {
+    $('quality').value = q;
+    if ($('quality').value !== q) $('quality').value = 'auto';
+  }
+  if (fps) $('fps').value = fps;
+
+  $('presetLine').textContent = rotuloPreset();
   $('presetLine').hidden = false;
 }
 
-// -------------------------------------------------------------------- ações
-
 async function start() {
-  curtas = 0;
-  ritmoAvisado = false;
   $('start').disabled = true;
   setStatus('Aguardando você escolher a tela…');
 
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const q = qualityFromUi();
 
   broadcaster = createBroadcaster({
     wsUrl: `${proto}://${location.host}/ws?t=${encodeURIComponent(token)}`,
-    bitrate: Number($('quality').value),
-    fps: Number($('fps').value),
+    bitrate: q.bitrate,
+    fps: q.fps,
+    adaptive: q.adaptive,
+    maxFps: q.maxFps,
     audio: $('withAudio').checked,
-    onStatus: (s) =>
+    onStatus: (s) => {
+      const hw = s.hardware ? 'HW' : 'SW';
       setStatus(
-        `Codec: ${s.codec} · ${s.width}×${s.height} · captura ${s.direct ? 'direta' : 'via <video>'}`
-      ),
+        `${s.label || s.codec} · ${s.width}×${s.height} · captura ${s.direct ? 'direta' : 'via <video>'} · ${hw}`
+      );
+      if (s.reason) {
+        $('hud').textContent =
+          `${s.fps} fps · ${s.width}×${s.height} · ${(s.bitrate / 1e6).toFixed(1)} Mb/s · ${s.label}`;
+      }
+    },
     onStats: (s) => {
       $('viewers').textContent = s.viewers;
       $('fpsOut').textContent = `${s.fps} fps`;
       $('bitrate').textContent = `${s.mbps.toFixed(1)} Mb/s`;
       $('elapsed').textContent =
         `${String(Math.floor(s.seconds / 60)).padStart(2, '0')}:${String(s.seconds % 60).padStart(2, '0')}`;
-      conferirRitmo(s);
+      const res = s.width && s.height ? `${s.width}×${s.height}` : '—';
+      $('hud').textContent = `${s.fps} fps · ${res} · ${s.mbps.toFixed(1)} Mb/s · ${s.label || ''}`.trim();
     },
     onAviso: (msg) => {
       setStatus(msg, 'aviso');
-      // O aviso sozinho é um beco: o botão é a saída dele.
       $('somAba').hidden = false;
     },
     onEnd: (reason) => {
@@ -174,8 +170,6 @@ async function start() {
   }
 }
 
-// Mantém o vídeo como está e troca só de onde vem o som — a única fonte que
-// não carrega o Discord junto é uma aba.
 $('somAba').addEventListener('click', async () => {
   if (!broadcaster) return;
   try {
